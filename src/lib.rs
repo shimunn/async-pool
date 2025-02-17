@@ -47,7 +47,7 @@ use core::cell::UnsafeCell;
 use core::future::{poll_fn, Future};
 use core::hash::{Hash, Hasher};
 use core::mem::MaybeUninit;
-use core::ops::{Deref, DerefMut};
+use core::ops::{AsyncFnOnce, Deref, DerefMut};
 use core::task::Poll;
 use core::{cmp, mem, ptr::NonNull};
 use embassy_sync::waitqueue::AtomicWaker;
@@ -193,11 +193,21 @@ impl<P: Pool> Box<P> {
     /// Wait until an item is available in the data pool, then return it.
     /// Returns None if the waker pool is full.
     pub async fn new_async(item: P::Item) -> Option<Self> {
+        Self::new_async_with(move || item).await
+    }
+
+    /// Waits until an slot in the pool is available and then
+    /// executes the closure `f`, writes the result into the slot
+    /// This function can be more stack efficient than [`new_async`]
+    /// if the provided closure is smaller than `P::Item`
+    ///
+    /// Returns None if the waker pool is full.
+    pub async fn new_async_with(f: impl FnOnce() -> P::Item) -> Option<Self> {
         let p = match P::get().alloc_async().await {
             Some(p) => p,
             None => return None,
         };
-        unsafe { p.as_ptr().write(item) };
+        unsafe { p.as_ptr().write(f()) };
         Some(Self { ptr: p })
     }
 
@@ -380,6 +390,7 @@ mod test {
 
     pool!(TestPool: [u32; 4], 0);
     pool!(TestPool2: [u32; 4], 1);
+    pool!(TestPool3: [[u8; 2048]; 0], 2);
 
     #[test]
     fn test_pool() {
@@ -458,5 +469,16 @@ mod test {
 
         let (b6, _) = join!(fut4, fut3);
         assert_eq!(*b6.unwrap(), 666);
+    }
+
+    #[tokio::test]
+    async fn stack_frame_size() {
+        let large_future = async { Box::<TestPool3>::new_async([0u8; 2048]).await };
+
+        let smaller_future = async { Box::<TestPool3>::new_async_with(|| [0u8; 2048]).await };
+
+        assert!(dbg!(size_of_val(&large_future)) > dbg!(size_of_val(&smaller_future)));
+        // difference should be significant
+        assert!(size_of_val(&large_future) > size_of_val(&smaller_future) * 10);
     }
 }

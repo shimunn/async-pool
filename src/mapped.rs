@@ -35,6 +35,25 @@ impl<P: Pool, T: 'static + ?Sized> MappedBox<P, T> {
         }
     }
 
+    /// Asynchronously creates a new `MappedBox`.
+    ///
+    /// # Arguments
+    /// * `f` - Closure producing an `P::Item` to be stored in the pool.
+    ///
+    /// # Returns
+    /// An `Option<Result<MappedBox<P, T>>>`, `None` if there is no waker available, Some(Err(_)) if `&mut P::Item` cannot be converted into `&mut T`.
+    pub async fn new_async_with<E>(f: impl FnOnce() -> T) -> Option<Result<Self, E>>
+    where
+        T: Into<P::Item>,
+        for<'a> &'a mut T: TryFrom<&'a mut P::Item, Error = E>,
+    {
+        if let Some(b) = Box::<P>::new_async_with(move || f().into()).await {
+            Some(b.convert())
+        } else {
+            None
+        }
+    }
+
     /// Synchronously creates a new `MappedBox`.
     ///
     /// # Arguments
